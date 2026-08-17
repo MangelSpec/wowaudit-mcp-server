@@ -1,0 +1,38 @@
+{
+  "name": "wowaudit-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing the WoWAudit API for guild roster, raid, attendance, loot, and application workflows",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "wowaudit-mcp-server": "./dist/index.js"
+  },
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "format": "prettier --write src test scripts README.md package.json tsconfig.json",
+    "format:check": "prettier --check src test scripts README.md package.json tsconfig.json",
+    "start": "node dist/index.js",
+    "prepare": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "test:live": "npm run build && node scripts/smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "^20.12.0",
+    "prettier": "3.6.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}
