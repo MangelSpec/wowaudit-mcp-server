@@ -15,6 +15,11 @@ export interface WowAuditConfig {
   applicationsEnabled: boolean;
 }
 
+export interface WowAuditFeatureFlags {
+  writesEnabled: boolean;
+  applicationsEnabled: boolean;
+}
+
 export function getConfig(): WowAuditConfig {
   const apiKey = process.env.WOWAUDIT_API_KEY?.trim();
   if (!apiKey) {
@@ -40,6 +45,12 @@ export function getConfig(): WowAuditConfig {
       MIN_MAX_RESPONSE_BYTES,
       MAX_MAX_RESPONSE_BYTES,
     ),
+    ...getFeatureFlags(),
+  };
+}
+
+export function getFeatureFlags(): WowAuditFeatureFlags {
+  return {
     writesEnabled: parseBoolean(
       "WOWAUDIT_ENABLE_WRITES",
       process.env.WOWAUDIT_ENABLE_WRITES,

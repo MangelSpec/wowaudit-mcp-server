@@ -7,7 +7,7 @@ The server uses stdio and `@modelcontextprotocol/server` 2.x. It serves the curr
 ## Requirements
 
 - Node.js 20 or newer.
-- A WoWAudit team API key. An administrator can retrieve it from <https://wowaudit.com/api>.
+- A WoWAudit team API key. A team administrator can copy it from the team's **Settings > Team > API key** field, or open <https://wowaudit.com/api> and select the team. WoWAudit does not currently expose a scoped read-only Public API key; this server enforces read-only access locally by default.
 
 ## Setup
 
@@ -54,7 +54,7 @@ A WoWAudit team API key can access the team's entire environment. The server app
 
 - The key is sent only as an `Authorization: Bearer` header. It is never put in a URL, result, or error.
 - Only documented `/v1/` routes are available. There is no arbitrary HTTP tool.
-- Writes are disabled unless `WOWAUDIT_ENABLE_WRITES=true`.
+- Write tools are not advertised or callable unless `WOWAUDIT_ENABLE_WRITES=true`. The HTTP client independently blocks mutation requests while disabled.
 - Destructive delete tools additionally require `confirm: true` on each call.
 - Application tools are disabled unless `WOWAUDIT_ENABLE_APPLICATIONS=true` because applications may contain identities, questionnaire answers, and uploaded-file URLs.
 - Tool annotations identify read-only, idempotent, and destructive operations to modern MCP clients.
@@ -74,7 +74,11 @@ Enabling application tools does not provide channel authorization. A Discord int
 | `WOWAUDIT_ENABLE_WRITES`       |                    `false` | Permit POST, PUT, and DELETE tools      |
 | `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools      |
 
+The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface.
+
 ## Tools
+
+Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true`. Application tools are only registered when `WOWAUDIT_ENABLE_APPLICATIONS=true`.
 
 ### Team and roster
 

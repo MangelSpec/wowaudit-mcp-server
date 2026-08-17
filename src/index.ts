@@ -7,18 +7,19 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { WowAuditApiError } from "./client.js";
 import { err, ok } from "./toolResult.js";
-import { findTool, TOOLS } from "./tools.js";
+import { findTool, getAvailableTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadDotenv({ path: path.resolve(__dirname, "../.env") });
 
 export function createServer(): Server {
+  const tools = getAvailableTools();
   const server = new Server(
     { name: "wowaudit-mcp-server", version: "0.1.0" },
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler("tools/list", async () => ({ tools: TOOLS }));
+  server.setRequestHandler("tools/list", async () => ({ tools }));
   server.setRequestHandler("tools/call", handleToolCall);
   return server;
 }
@@ -49,12 +50,13 @@ async function handleToolCall(request: CallToolRequest) {
 }
 
 function main(): void {
+  const tools = getAvailableTools();
   serveStdio(createServer, {
     legacy: "serve",
     onerror: (error) => console.error("MCP server error:", error),
   });
   console.error(
-    `wowaudit-mcp-server running on stdio (${TOOLS.length} tools; writes ${
+    `wowaudit-mcp-server running on stdio (${tools.length} tools; writes ${
       process.env.WOWAUDIT_ENABLE_WRITES === "true" ? "enabled" : "disabled"
     }; applications ${
       process.env.WOWAUDIT_ENABLE_APPLICATIONS === "true"

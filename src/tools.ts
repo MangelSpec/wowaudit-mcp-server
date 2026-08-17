@@ -1,7 +1,7 @@
 import type { Tool } from "@modelcontextprotocol/server";
 
 import { requestWowAudit, type HttpMethod } from "./client.js";
-import { getConfig } from "./config.js";
+import { getConfig, getFeatureFlags } from "./config.js";
 import {
   compactObject,
   optionalDate,
@@ -715,10 +715,6 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
   ),
 ];
 
-export const TOOLS: Tool[] = TOOL_DESCRIPTORS.map(
-  (descriptor) => descriptor.definition,
-);
-
 const TOOL_BY_NAME = new Map(
   TOOL_DESCRIPTORS.map((descriptor) => [
     descriptor.definition.name,
@@ -727,7 +723,27 @@ const TOOL_BY_NAME = new Map(
 );
 
 export function findTool(name: string): ToolDescriptor | undefined {
-  return TOOL_BY_NAME.get(name);
+  const descriptor = TOOL_BY_NAME.get(name);
+  return descriptor && isToolEnabled(descriptor) ? descriptor : undefined;
+}
+
+export function getAvailableTools(): Tool[] {
+  return TOOL_DESCRIPTORS.filter(isToolEnabled).map(
+    (descriptor) => descriptor.definition,
+  );
+}
+
+function isToolEnabled(descriptor: ToolDescriptor): boolean {
+  const flags = getFeatureFlags();
+  const name = descriptor.definition.name;
+  if (!flags.applicationsEnabled && name.includes("application")) return false;
+  if (
+    !flags.writesEnabled &&
+    !descriptor.definition.annotations?.readOnlyHint
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function requireApplicationsEnabled(): void {
