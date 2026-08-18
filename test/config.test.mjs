@@ -94,6 +94,7 @@ test("reads exact non-empty UTF-8 API key bytes from an inherited fd", () => {
     delete process.env.WOWAUDIT_API_KEY;
     process.env.WOWAUDIT_API_KEY_FD = String(fd);
     assert.equal(getConfig().apiKey, key);
+    assert.equal(getConfig().apiKey, key);
   });
 });
 

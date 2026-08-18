@@ -9,6 +9,8 @@ const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const MAX_API_KEY_FD = 1024;
 
+let cachedFdApiKey: string | undefined;
+
 export type WowAuditWritePolicy = "raidlens-create-update-v1" | undefined;
 
 export interface WowAuditConfig {
@@ -28,7 +30,7 @@ export interface WowAuditFeatureFlags {
 }
 
 export function getConfig(): WowAuditConfig {
-  const apiKey = readApiKey(
+  const apiKey = readConfiguredApiKey(
     process.env.WOWAUDIT_API_KEY,
     process.env.WOWAUDIT_API_KEY_FD,
   );
@@ -52,6 +54,18 @@ export function getConfig(): WowAuditConfig {
     ),
     ...getFeatureFlags(),
   };
+}
+
+function readConfiguredApiKey(
+  value: string | undefined,
+  fdValue: string | undefined,
+): string {
+  const hasValue = value !== undefined && value.length > 0;
+  const hasFd = fdValue !== undefined && fdValue.length > 0;
+  if (hasValue || !hasFd) return readApiKey(value, fdValue);
+
+  cachedFdApiKey ??= readApiKey(undefined, fdValue);
+  return cachedFdApiKey;
 }
 
 export function readApiKey(

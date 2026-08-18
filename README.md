@@ -48,7 +48,7 @@ Use the compiled entry point from an MCP client:
 
 The server resolves `.env` relative to its installed location, not the MCP client's working directory. Credentials may instead be supplied through the client's `env` configuration.
 
-Integrators that must preserve the API key's exact UTF-8 bytes can pass it through a dedicated inherited file descriptor instead of an environment variable. Inherit a readable descriptor as FD 3 and set only `WOWAUDIT_API_KEY_FD=3`. The descriptor contents must be non-empty valid UTF-8 and are read without trimming or newline removal. Do not also set a non-empty `WOWAUDIT_API_KEY`.
+Integrators that must preserve the API key's exact UTF-8 bytes can pass it through a dedicated inherited file descriptor instead of an environment variable. Inherit a readable descriptor as FD 3 and set only `WOWAUDIT_API_KEY_FD=3`. The descriptor contents must be non-empty valid UTF-8 and are read once, cached in memory for the MCP process lifetime, and reused without trimming or newline removal. Do not also set a non-empty `WOWAUDIT_API_KEY`.
 
 ## Security model
 
@@ -144,13 +144,18 @@ Successful tools, including `wowaudit_get_team`, return the canonical `{ data, m
 
 ```json
 {
-  "data": {},
+  "data": {
+    "teamId": "42",
+    "teamDisplayName": "RaidLens Team"
+  },
   "meta": {
     "endpoint": "/v1/team",
     "method": "GET"
   }
 }
 ```
+
+`wowaudit_get_team` validates the upstream numeric `id` and `name`, converts the ID to a string, and returns only `teamId` (1 to 128 characters) and `teamDisplayName` (1 to 200 characters). Other upstream team fields are not exposed.
 
 Collection tools accepting `limit` additionally report `totalItems`, `returnedItems`, and `truncated`. The limit is applied after WoWAudit responds because the public API does not document server-side pagination.
 

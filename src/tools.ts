@@ -79,6 +79,9 @@ const LIMIT_PROPERTY = {
     "Maximum top-level collection entries returned after WoWAudit responds. The upstream API does not document pagination.",
 } as const;
 
+const TEAM_ID_MAX_LENGTH = 128;
+const TEAM_DISPLAY_NAME_MAX_LENGTH = 200;
+
 const OUTPUT_SCHEMA = {
   type: "object",
   properties: {
@@ -98,6 +101,30 @@ const OUTPUT_SCHEMA = {
   },
   required: ["data", "meta"],
   additionalProperties: false,
+} as const;
+
+const TEAM_OUTPUT_SCHEMA = {
+  ...OUTPUT_SCHEMA,
+  properties: {
+    ...OUTPUT_SCHEMA.properties,
+    data: {
+      type: "object",
+      properties: {
+        teamId: {
+          type: "string",
+          minLength: 1,
+          maxLength: TEAM_ID_MAX_LENGTH,
+        },
+        teamDisplayName: {
+          type: "string",
+          minLength: 1,
+          maxLength: TEAM_DISPLAY_NAME_MAX_LENGTH,
+        },
+      },
+      required: ["teamId", "teamDisplayName"],
+      additionalProperties: false,
+    },
+  },
 } as const;
 
 const READ_ANNOTATIONS = {
@@ -150,17 +177,59 @@ function defineTool(
   inputSchema: Tool["inputSchema"],
   annotations: Tool["annotations"],
   execute: ToolDescriptor["execute"],
+  outputSchema: Tool["outputSchema"] = OUTPUT_SCHEMA,
 ): ToolDescriptor {
   return {
     definition: {
       name,
       description,
       inputSchema,
-      outputSchema: OUTPUT_SCHEMA,
+      outputSchema,
       annotations,
     },
     execute,
   };
+}
+
+async function getTeam(): Promise<Record<string, unknown>> {
+  const endpoint = "/v1/team";
+  const method = "GET";
+  const raw = await requestWowAudit(endpoint, { method });
+  return {
+    data: normalizeTeam(raw),
+    meta: { endpoint, method },
+  };
+}
+
+function normalizeTeam(raw: unknown): {
+  teamId: string;
+  teamDisplayName: string;
+} {
+  if (!isRecord(raw)) {
+    throw new Error("WoWAudit team response must be an object");
+  }
+  if (!Number.isSafeInteger(raw.id) || (raw.id as number) < 1) {
+    throw new Error("WoWAudit team response id must be a positive integer");
+  }
+  if (typeof raw.name !== "string") {
+    throw new Error(
+      `WoWAudit team response name must be between 1 and ${TEAM_DISPLAY_NAME_MAX_LENGTH} characters`,
+    );
+  }
+  const nameLength = [...raw.name].length;
+  if (nameLength < 1 || nameLength > TEAM_DISPLAY_NAME_MAX_LENGTH) {
+    throw new Error(
+      `WoWAudit team response name must be between 1 and ${TEAM_DISPLAY_NAME_MAX_LENGTH} characters`,
+    );
+  }
+
+  const teamId = String(raw.id);
+  if (teamId.length > TEAM_ID_MAX_LENGTH) {
+    throw new Error(
+      `WoWAudit team response id must be at most ${TEAM_ID_MAX_LENGTH} characters`,
+    );
+  }
+  return { teamId, teamDisplayName: raw.name };
 }
 
 async function call(
@@ -278,10 +347,11 @@ function mutationInput(
 export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
   defineTool(
     "wowaudit_get_team",
-    "Get the authenticated WoWAudit team, guild identity, refresh timestamps, raid-day schedule, and wishlist freshness.",
+    "Get the authenticated WoWAudit team as its normalized team ID and display name.",
     EMPTY_INPUT,
     READ_ANNOTATIONS,
-    async () => call("/v1/team"),
+    getTeam,
+    TEAM_OUTPUT_SCHEMA,
   ),
   defineTool(
     "wowaudit_get_period",

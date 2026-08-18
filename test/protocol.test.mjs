@@ -70,7 +70,7 @@ const dispatchedRaidLensMutations = [
   ["wowaudit_upload_wishlist", {}],
 ];
 
-async function connect(mode, env = {}, fdKeyPath) {
+async function connect(mode, env = {}, fdKeyPath, onStderr) {
   const client = new Client(
     { name: `wowaudit-test-${mode}`, version: "1.0.0" },
     { versionNegotiation: { mode } },
@@ -89,15 +89,14 @@ async function connect(mode, env = {}, fdKeyPath) {
     childEnv.WOWAUDIT_API_KEY_FD = "3";
     childEnv.WOWAUDIT_TEST_API_KEY_PATH = fdKeyPath;
   }
-  await client.connect(
-    new StdioClientTransport({
-      args: fdKeyPath ? [fdLauncherEntry, serverEntry] : [serverEntry],
-      command: process.execPath,
-      env: childEnv,
-      stderr: "pipe",
-    }),
-    { timeout: 10_000 },
-  );
+  const transport = new StdioClientTransport({
+    args: fdKeyPath ? [fdLauncherEntry, serverEntry] : [serverEntry],
+    command: process.execPath,
+    env: childEnv,
+    stderr: "pipe",
+  });
+  if (onStderr) transport.stderr.on("data", onStderr);
+  await client.connect(transport, { timeout: 10_000 });
   return client;
 }
 
@@ -118,8 +117,25 @@ for (const mode of ["auto", "legacy"]) {
       const roster = tools.find(
         (tool) => tool.name === "wowaudit_list_characters",
       );
+      const team = tools.find((tool) => tool.name === "wowaudit_get_team");
       assert.equal(roster?.annotations?.readOnlyHint, true);
       assert.equal(roster?.inputSchema.properties.limit.maximum, 500);
+      assert.deepEqual(team?.outputSchema.properties.data.required, [
+        "teamId",
+        "teamDisplayName",
+      ]);
+      assert.equal(
+        team?.outputSchema.properties.data.properties.teamId.maxLength,
+        128,
+      );
+      assert.equal(
+        team?.outputSchema.properties.data.properties.teamDisplayName.maxLength,
+        200,
+      );
+      assert.equal(
+        team?.outputSchema.properties.data.additionalProperties,
+        false,
+      );
       assert.equal(
         client.getProtocolEra(),
         mode === "auto" ? "modern" : "legacy",
@@ -224,41 +240,67 @@ test("RaidLens policy rejects direct dispatch outside its complete surface", asy
   }
 });
 
-test("uses inherited FD 3 and preserves the canonical team envelope", async () => {
+test("reuses inherited FD 3 for multiple authenticated requests without logging it", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "wowaudit-protocol-key-"));
   const keyPath = path.join(directory, "key");
-  writeFileSync(keyPath, Buffer.from("fd-protocol-key", "utf8"));
+  const apiKey = "fd-protocol-key";
+  writeFileSync(keyPath, Buffer.from(apiKey, "utf8"));
 
-  let authorization;
+  const requests = [];
   const upstream = createHttpServer((request, response) => {
-    authorization = request.headers.authorization;
+    requests.push({
+      authorization: request.headers.authorization,
+      url: request.url,
+    });
     response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ name: "RaidLens Team", id: 42 }));
+    response.end(
+      JSON.stringify(
+        request.url === "/v1/team"
+          ? { name: "RaidLens Team", id: 42, private: "not-canonical" }
+          : { current_period: 123 },
+      ),
+    );
   });
   await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const address = upstream.address();
   assert.ok(address && typeof address === "object");
 
+  let stderr = "";
   const client = await connect(
     "auto",
     { WOWAUDIT_BASE_URL: `http://127.0.0.1:${address.port}` },
     keyPath,
+    (chunk) => {
+      stderr += chunk.toString();
+    },
   );
   try {
-    const result = await client.callTool({
+    const teamResult = await client.callTool({
       name: "wowaudit_get_team",
       arguments: {},
     });
-    assert.equal(result.isError, undefined);
-    assert.deepEqual(result.structuredContent, {
-      data: { name: "RaidLens Team", id: 42 },
+    const periodResult = await client.callTool({
+      name: "wowaudit_get_period",
+      arguments: {},
+    });
+    assert.equal(teamResult.isError, undefined);
+    assert.deepEqual(teamResult.structuredContent, {
+      data: { teamId: "42", teamDisplayName: "RaidLens Team" },
       meta: { endpoint: "/v1/team", method: "GET" },
     });
     assert.deepEqual(
-      JSON.parse(result.content[0].text),
-      result.structuredContent,
+      JSON.parse(teamResult.content[0].text),
+      teamResult.structuredContent,
     );
-    assert.equal(authorization, "Bearer fd-protocol-key");
+    assert.equal(periodResult.isError, undefined);
+    assert.deepEqual(
+      requests,
+      ["/v1/team", "/v1/period"].map((url) => ({
+        authorization: `Bearer ${apiKey}`,
+        url,
+      })),
+    );
+    assert.doesNotMatch(stderr, new RegExp(apiKey));
   } finally {
     await client.close();
     await new Promise((resolve, reject) =>
@@ -267,6 +309,47 @@ test("uses inherited FD 3 and preserves the canonical team envelope", async () =
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+for (const [label, payload, message] of [
+  [
+    "an unsafe numeric id",
+    { id: Number.MAX_SAFE_INTEGER + 1, name: "RaidLens Team" },
+    /team response id must be a positive integer/,
+  ],
+  [
+    "an overlong display name",
+    { id: 42, name: "x".repeat(201) },
+    /team response name must be between 1 and 200 characters/,
+  ],
+]) {
+  test(`rejects a WoWAudit team response with ${label}`, async () => {
+    const upstream = createHttpServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(payload));
+    });
+    await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    assert.ok(address && typeof address === "object");
+
+    const client = await connect("auto", {
+      WOWAUDIT_API_KEY: "test-key",
+      WOWAUDIT_BASE_URL: `http://127.0.0.1:${address.port}`,
+    });
+    try {
+      const result = await client.callTool({
+        name: "wowaudit_get_team",
+        arguments: {},
+      });
+      assert.equal(result.isError, true);
+      assert.match(result.structuredContent.error, message);
+    } finally {
+      await client.close();
+      await new Promise((resolve, reject) =>
+        upstream.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+}
 
 test("returns structured configuration errors with a text fallback", async () => {
   const client = await connect("auto");
