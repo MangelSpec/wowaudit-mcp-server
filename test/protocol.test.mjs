@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
@@ -6,6 +9,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const serverEntry = path.resolve("dist/index.js");
+const fdLauncherEntry = path.resolve("scripts/test-fd-launcher.mjs");
 const expectedReadTools = [
   "wowaudit_get_attendance",
   "wowaudit_get_character_history",
@@ -51,13 +55,13 @@ const expectedRaidLensMutations = [
   "wowaudit_update_raid",
   "wowaudit_upload_wishlist",
 ];
-const deniedRaidLensMutations = [
-  ["wowaudit_delete_application", { id: 1, confirm: true }],
-  ["wowaudit_delete_raid", { id: 1, confirm: true }],
-  ["wowaudit_delete_wishlist", { id: 1, confirm: true }],
-  ["wowaudit_untrack_character", { id: 1, confirm: true }],
-  ["wowaudit_update_application", { id: 1, status: "accepted" }],
-];
+const expectedRaidLensTools = [
+  ...expectedReadTools,
+  ...expectedRaidLensMutations,
+].sort();
+const deniedRaidLensTools = expectedTools.filter(
+  (name) => !expectedRaidLensTools.includes(name),
+);
 const dispatchedRaidLensMutations = [
   ["wowaudit_create_raid", {}],
   ["wowaudit_track_character", {}],
@@ -66,23 +70,30 @@ const dispatchedRaidLensMutations = [
   ["wowaudit_upload_wishlist", {}],
 ];
 
-async function connect(mode, env = {}) {
+async function connect(mode, env = {}, fdKeyPath) {
   const client = new Client(
     { name: `wowaudit-test-${mode}`, version: "1.0.0" },
     { versionNegotiation: { mode } },
   );
+  const childEnv = {
+    ...process.env,
+    WOWAUDIT_API_KEY: "",
+    WOWAUDIT_API_KEY_FD: "",
+    WOWAUDIT_ENABLE_APPLICATIONS: "false",
+    WOWAUDIT_ENABLE_WRITES: "false",
+    WOWAUDIT_WRITE_POLICY: "",
+    ...env,
+  };
+  if (fdKeyPath) {
+    delete childEnv.WOWAUDIT_API_KEY;
+    childEnv.WOWAUDIT_API_KEY_FD = "3";
+    childEnv.WOWAUDIT_TEST_API_KEY_PATH = fdKeyPath;
+  }
   await client.connect(
     new StdioClientTransport({
-      args: [serverEntry],
+      args: fdKeyPath ? [fdLauncherEntry, serverEntry] : [serverEntry],
       command: process.execPath,
-      env: {
-        ...process.env,
-        WOWAUDIT_API_KEY: "",
-        WOWAUDIT_ENABLE_APPLICATIONS: "false",
-        WOWAUDIT_ENABLE_WRITES: "false",
-        WOWAUDIT_WRITE_POLICY: "",
-        ...env,
-      },
+      env: childEnv,
       stderr: "pipe",
     }),
     { timeout: 10_000 },
@@ -141,7 +152,7 @@ test("registers the complete surface only when both feature gates are enabled", 
   }
 });
 
-test("RaidLens policy lists only create and update mutations", async () => {
+test("RaidLens policy exposes its complete fixed tool surface", async () => {
   const client = await connect("auto", {
     WOWAUDIT_API_KEY: "test-key",
     WOWAUDIT_ENABLE_APPLICATIONS: "true",
@@ -150,11 +161,14 @@ test("RaidLens policy lists only create and update mutations", async () => {
   });
   try {
     const { tools } = await client.listTools();
-    const mutations = tools
-      .filter((tool) => tool.annotations?.readOnlyHint === false)
-      .map((tool) => tool.name)
-      .sort();
-    assert.deepEqual(mutations, expectedRaidLensMutations);
+    assert.deepEqual(
+      tools.map((tool) => tool.name).sort(),
+      expectedRaidLensTools,
+    );
+    assert.equal(
+      tools.some((tool) => tool.name.includes("application")),
+      false,
+    );
   } finally {
     await client.close();
   }
@@ -192,7 +206,7 @@ test("RaidLens policy dispatches each permitted mutation", async () => {
   }
 });
 
-test("RaidLens policy rejects direct dispatch of every other mutation", async () => {
+test("RaidLens policy rejects direct dispatch outside its complete surface", async () => {
   const client = await connect("auto", {
     WOWAUDIT_API_KEY: "test-key",
     WOWAUDIT_ENABLE_APPLICATIONS: "true",
@@ -200,13 +214,57 @@ test("RaidLens policy rejects direct dispatch of every other mutation", async ()
     WOWAUDIT_WRITE_POLICY: "raidlens-create-update-v1",
   });
   try {
-    for (const [name, args] of deniedRaidLensMutations) {
-      const result = await client.callTool({ name, arguments: args });
+    for (const name of deniedRaidLensTools) {
+      const result = await client.callTool({ name, arguments: {} });
       assert.equal(result.isError, true, name);
       assert.match(result.structuredContent.error, /Unknown tool/, name);
     }
   } finally {
     await client.close();
+  }
+});
+
+test("uses inherited FD 3 and preserves the canonical team envelope", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "wowaudit-protocol-key-"));
+  const keyPath = path.join(directory, "key");
+  writeFileSync(keyPath, Buffer.from("fd-protocol-key", "utf8"));
+
+  let authorization;
+  const upstream = createHttpServer((request, response) => {
+    authorization = request.headers.authorization;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ name: "RaidLens Team", id: 42 }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = await connect(
+    "auto",
+    { WOWAUDIT_BASE_URL: `http://127.0.0.1:${address.port}` },
+    keyPath,
+  );
+  try {
+    const result = await client.callTool({
+      name: "wowaudit_get_team",
+      arguments: {},
+    });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(result.structuredContent, {
+      data: { name: "RaidLens Team", id: 42 },
+      meta: { endpoint: "/v1/team", method: "GET" },
+    });
+    assert.deepEqual(
+      JSON.parse(result.content[0].text),
+      result.structuredContent,
+    );
+    assert.equal(authorization, "Bearer fd-protocol-key");
+  } finally {
+    await client.close();
+    await new Promise((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 

@@ -64,7 +64,13 @@ export async function requestWowAudit<T = unknown>(
         null,
       );
     }
-    throw error;
+    throw new WowAuditApiError(
+      `WoWAudit request failed: ${redactApiKey(
+        error instanceof Error ? error.message : String(error),
+        config.apiKey,
+      )}`,
+      null,
+    );
   } finally {
     clearTimeout(timeout);
   }
@@ -165,9 +171,13 @@ function buildApiErrorMessage(
     const record = data as Record<string, unknown>;
     const candidate = record.description ?? record.message ?? record.error;
     if (typeof candidate === "string" && candidate.trim()) {
-      const sanitized = candidate.split(apiKey).join("[redacted]");
+      const sanitized = redactApiKey(candidate, apiKey);
       detail = `: ${sanitized.replace(/\s+/g, " ").trim().slice(0, 300)}`;
     }
   }
   return `WoWAudit API error ${status} ${statusText}${detail}`;
+}
+
+function redactApiKey(value: string, apiKey: string): string {
+  return value.split(apiKey).join("[redacted]");
 }

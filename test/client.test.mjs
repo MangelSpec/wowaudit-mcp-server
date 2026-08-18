@@ -83,3 +83,16 @@ test("redacts the API key if an upstream error reflects it", async () => {
     return true;
   });
 });
+
+test("redacts the API key if the HTTP runtime rejects its exact value", async () => {
+  process.env.WOWAUDIT_API_KEY = "key-with-\0-nul";
+  globalThis.fetch = async () => {
+    throw new TypeError("Invalid header value: Bearer key-with-\0-nul");
+  };
+
+  await assert.rejects(requestWowAudit("/v1/team"), (error) => {
+    assert.doesNotMatch(error.message, /key-with-/);
+    assert.match(error.message, /Bearer \[redacted\]/);
+    return true;
+  });
+});

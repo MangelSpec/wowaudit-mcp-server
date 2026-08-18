@@ -48,6 +48,8 @@ Use the compiled entry point from an MCP client:
 
 The server resolves `.env` relative to its installed location, not the MCP client's working directory. Credentials may instead be supplied through the client's `env` configuration.
 
+Integrators that must preserve the API key's exact UTF-8 bytes can pass it through a dedicated inherited file descriptor instead of an environment variable. Inherit a readable descriptor as FD 3 and set only `WOWAUDIT_API_KEY_FD=3`. The descriptor contents must be non-empty valid UTF-8 and are read without trimming or newline removal. Do not also set a non-empty `WOWAUDIT_API_KEY`.
+
 ## Security model
 
 A WoWAudit team API key can access the team's entire environment. The server applies these safeguards:
@@ -67,7 +69,8 @@ Enabling application tools does not provide channel authorization. A Discord int
 
 | Variable                       |                    Default | Purpose                                        |
 | ------------------------------ | -------------------------: | ---------------------------------------------- |
-| `WOWAUDIT_API_KEY`             |     required for API calls | Team API key                                   |
+| `WOWAUDIT_API_KEY`             | required unless FD is used | Team API key, preserved without trimming       |
+| `WOWAUDIT_API_KEY_FD`          |                      unset | Inherited API key descriptor, 1 to 1024        |
 | `WOWAUDIT_BASE_URL`            | `https://api.wowaudit.com` | API origin                                     |
 | `WOWAUDIT_REQUEST_TIMEOUT_MS`  |                    `30000` | Request timeout, 5,000 to 120,000 ms           |
 | `WOWAUDIT_MAX_RESPONSE_BYTES`  |                  `2097152` | Maximum JSON response, 64 KiB to 10 MiB        |
@@ -75,11 +78,11 @@ Enabling application tools does not provide channel authorization. A Discord int
 | `WOWAUDIT_WRITE_POLICY`        |                      unset | Restrict writes to `raidlens-create-update-v1` |
 | `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools             |
 
-The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist`; all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
+The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes the 11 non-sensitive GET tools plus only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist` when writes are enabled. All application tools are suppressed regardless of `WOWAUDIT_ENABLE_APPLICATIONS`, and all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
 
 ## Tools
 
-Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true` and permitted by `WOWAUDIT_WRITE_POLICY`. Application tools are only registered when `WOWAUDIT_ENABLE_APPLICATIONS=true`.
+Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true` and permitted by `WOWAUDIT_WRITE_POLICY`. Application tools are only registered when `WOWAUDIT_ENABLE_APPLICATIONS=true` and no policy suppresses them.
 
 ### Team and roster
 
@@ -133,11 +136,11 @@ The all-character wishlist and loot endpoints can be large. Prefer character-spe
 | `wowaudit_update_application` | `PUT /v1/applications/{id}`    |
 | `wowaudit_delete_application` | `DELETE /v1/applications/{id}` |
 
-Applications are separately gated by `WOWAUDIT_ENABLE_APPLICATIONS=true`. Mutating them also requires `WOWAUDIT_ENABLE_WRITES=true`.
+Applications are separately gated by `WOWAUDIT_ENABLE_APPLICATIONS=true`. Mutating them also requires `WOWAUDIT_ENABLE_WRITES=true`. The `raidlens-create-update-v1` policy suppresses every application tool regardless of these flags.
 
 ## Result envelope
 
-Successful tools return:
+Successful tools, including `wowaudit_get_team`, return the canonical `{ data, meta }` envelope consumed by RaidLens:
 
 ```json
 {

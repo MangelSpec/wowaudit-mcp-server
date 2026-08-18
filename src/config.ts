@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 const DEFAULT_BASE_URL = "https://api.wowaudit.com";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const MIN_REQUEST_TIMEOUT_MS = 5_000;
@@ -5,6 +7,7 @@ const MAX_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const MAX_API_KEY_FD = 1024;
 
 export type WowAuditWritePolicy = "raidlens-create-update-v1" | undefined;
 
@@ -25,12 +28,10 @@ export interface WowAuditFeatureFlags {
 }
 
 export function getConfig(): WowAuditConfig {
-  const apiKey = process.env.WOWAUDIT_API_KEY?.trim();
-  if (!apiKey) {
-    throw new Error(
-      "Missing WOWAUDIT_API_KEY. Create .env from .env.example and add the team API key from https://wowaudit.com/api.",
-    );
-  }
+  const apiKey = readApiKey(
+    process.env.WOWAUDIT_API_KEY,
+    process.env.WOWAUDIT_API_KEY_FD,
+  );
 
   return {
     apiKey,
@@ -51,6 +52,54 @@ export function getConfig(): WowAuditConfig {
     ),
     ...getFeatureFlags(),
   };
+}
+
+export function readApiKey(
+  value: string | undefined,
+  fdValue: string | undefined,
+): string {
+  const hasValue = value !== undefined && value.length > 0;
+  const hasFd = fdValue !== undefined && fdValue.length > 0;
+  if (hasValue && hasFd) {
+    throw new Error(
+      "Set exactly one of WOWAUDIT_API_KEY or WOWAUDIT_API_KEY_FD",
+    );
+  }
+  if (hasValue) return value;
+  if (!hasFd) {
+    throw new Error(
+      "Missing WOWAUDIT_API_KEY or WOWAUDIT_API_KEY_FD. Add the team API key from https://wowaudit.com/api.",
+    );
+  }
+
+  if (!/^\d+$/.test(fdValue)) {
+    throw new Error(
+      "WOWAUDIT_API_KEY_FD must be an integer between 1 and 1024",
+    );
+  }
+  const fd = Number(fdValue);
+  if (!Number.isSafeInteger(fd) || fd < 1 || fd > MAX_API_KEY_FD) {
+    throw new Error(
+      "WOWAUDIT_API_KEY_FD must be an integer between 1 and 1024",
+    );
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(fd);
+  } catch {
+    throw new Error("Unable to read WOWAUDIT_API_KEY_FD");
+  }
+  if (bytes.length === 0) {
+    throw new Error("WOWAUDIT_API_KEY_FD must not be empty");
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+      bytes,
+    );
+  } catch {
+    throw new Error("WOWAUDIT_API_KEY_FD must contain valid UTF-8");
+  }
 }
 
 export function getFeatureFlags(): WowAuditFeatureFlags {
