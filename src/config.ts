@@ -6,6 +6,8 @@ const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
+export type WowAuditWritePolicy = "raidlens-create-update-v1" | undefined;
+
 export interface WowAuditConfig {
   apiKey: string;
   baseUrl: string;
@@ -13,11 +15,13 @@ export interface WowAuditConfig {
   maxResponseBytes: number;
   writesEnabled: boolean;
   applicationsEnabled: boolean;
+  writePolicy: WowAuditWritePolicy;
 }
 
 export interface WowAuditFeatureFlags {
   writesEnabled: boolean;
   applicationsEnabled: boolean;
+  writePolicy: WowAuditWritePolicy;
 }
 
 export function getConfig(): WowAuditConfig {
@@ -61,7 +65,18 @@ export function getFeatureFlags(): WowAuditFeatureFlags {
       process.env.WOWAUDIT_ENABLE_APPLICATIONS,
       false,
     ),
+    writePolicy: parseWritePolicy(process.env.WOWAUDIT_WRITE_POLICY),
   };
+}
+
+export function parseWritePolicy(
+  value: string | undefined,
+): WowAuditWritePolicy {
+  if (value === undefined || value.trim() === "") return undefined;
+  if (value === "raidlens-create-update-v1") return value;
+  throw new Error(
+    "WOWAUDIT_WRITE_POLICY must be raidlens-create-update-v1 when set",
+  );
 }
 
 export function parseBaseUrl(value: string | undefined): string {

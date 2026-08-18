@@ -46,6 +46,13 @@ const CLASSES = [
   "Evoker",
 ] as const;
 const APPLICATION_STATUSES = ["under_review", "accepted", "rejected"] as const;
+const RAIDLENS_WRITE_TOOLS = new Set([
+  "wowaudit_track_character",
+  "wowaudit_update_character",
+  "wowaudit_create_raid",
+  "wowaudit_update_raid",
+  "wowaudit_upload_wishlist",
+]);
 
 const EMPTY_INPUT = {
   type: "object",
@@ -737,12 +744,13 @@ function isToolEnabled(descriptor: ToolDescriptor): boolean {
   const flags = getFeatureFlags();
   const name = descriptor.definition.name;
   if (!flags.applicationsEnabled && name.includes("application")) return false;
+  if (descriptor.definition.annotations?.readOnlyHint) return true;
+  if (!flags.writesEnabled) return false;
   if (
-    !flags.writesEnabled &&
-    !descriptor.definition.annotations?.readOnlyHint
-  ) {
+    flags.writePolicy === "raidlens-create-update-v1" &&
+    !RAIDLENS_WRITE_TOOLS.has(name)
+  )
     return false;
-  }
   return true;
 }
 

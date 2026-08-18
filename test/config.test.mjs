@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { parseBaseUrl, parseBoundedInteger } from "../dist/config.js";
+import {
+  parseBaseUrl,
+  parseBoundedInteger,
+  parseWritePolicy,
+} from "../dist/config.js";
 
 test("normalizes and validates the WoWAudit base URL", () => {
   assert.equal(parseBaseUrl(undefined), "https://api.wowaudit.com");
@@ -29,5 +33,22 @@ test("validates bounded integer configuration", () => {
   assert.throws(
     () => parseBoundedInteger("VALUE", "1.5", 30, 10, 60),
     /must be an integer/,
+  );
+});
+
+test("accepts only the exact documented write policy", () => {
+  assert.equal(parseWritePolicy(undefined), undefined);
+  assert.equal(parseWritePolicy(""), undefined);
+  assert.equal(
+    parseWritePolicy("raidlens-create-update-v1"),
+    "raidlens-create-update-v1",
+  );
+  assert.throws(
+    () => parseWritePolicy("raidlens-create-update-v2"),
+    /WOWAUDIT_WRITE_POLICY must be raidlens-create-update-v1 when set/,
+  );
+  assert.throws(
+    () => parseWritePolicy(" raidlens-create-update-v1 "),
+    /WOWAUDIT_WRITE_POLICY must be raidlens-create-update-v1 when set/,
   );
 });

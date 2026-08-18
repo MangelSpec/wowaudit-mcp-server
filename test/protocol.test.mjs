@@ -44,6 +44,27 @@ const expectedTools = [
   "wowaudit_update_raid",
   "wowaudit_upload_wishlist",
 ];
+const expectedRaidLensMutations = [
+  "wowaudit_create_raid",
+  "wowaudit_track_character",
+  "wowaudit_update_character",
+  "wowaudit_update_raid",
+  "wowaudit_upload_wishlist",
+];
+const deniedRaidLensMutations = [
+  ["wowaudit_delete_application", { id: 1, confirm: true }],
+  ["wowaudit_delete_raid", { id: 1, confirm: true }],
+  ["wowaudit_delete_wishlist", { id: 1, confirm: true }],
+  ["wowaudit_untrack_character", { id: 1, confirm: true }],
+  ["wowaudit_update_application", { id: 1, status: "accepted" }],
+];
+const dispatchedRaidLensMutations = [
+  ["wowaudit_create_raid", {}],
+  ["wowaudit_track_character", {}],
+  ["wowaudit_update_character", {}],
+  ["wowaudit_update_raid", {}],
+  ["wowaudit_upload_wishlist", {}],
+];
 
 async function connect(mode, env = {}) {
   const client = new Client(
@@ -59,6 +80,7 @@ async function connect(mode, env = {}) {
         WOWAUDIT_API_KEY: "",
         WOWAUDIT_ENABLE_APPLICATIONS: "false",
         WOWAUDIT_ENABLE_WRITES: "false",
+        WOWAUDIT_WRITE_POLICY: "",
         ...env,
       },
       stderr: "pipe",
@@ -114,6 +136,75 @@ test("registers the complete surface only when both feature gates are enabled", 
     assert.equal(deleteRaid?.annotations?.destructiveHint, true);
     assert.equal(deleteRaid?.inputSchema.properties.confirm.const, true);
     assert.deepEqual(deleteRaid?.inputSchema.required, ["id", "confirm"]);
+  } finally {
+    await client.close();
+  }
+});
+
+test("RaidLens policy lists only create and update mutations", async () => {
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_ENABLE_APPLICATIONS: "true",
+    WOWAUDIT_ENABLE_WRITES: "true",
+    WOWAUDIT_WRITE_POLICY: "raidlens-create-update-v1",
+  });
+  try {
+    const { tools } = await client.listTools();
+    const mutations = tools
+      .filter((tool) => tool.annotations?.readOnlyHint === false)
+      .map((tool) => tool.name)
+      .sort();
+    assert.deepEqual(mutations, expectedRaidLensMutations);
+  } finally {
+    await client.close();
+  }
+});
+
+test("RaidLens policy preserves read-only mode when writes are disabled", async () => {
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_ENABLE_WRITES: "false",
+    WOWAUDIT_WRITE_POLICY: "raidlens-create-update-v1",
+  });
+  try {
+    const { tools } = await client.listTools();
+    assert.deepEqual(tools.map((tool) => tool.name).sort(), expectedReadTools);
+  } finally {
+    await client.close();
+  }
+});
+
+test("RaidLens policy dispatches each permitted mutation", async () => {
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_ENABLE_WRITES: "true",
+    WOWAUDIT_WRITE_POLICY: "raidlens-create-update-v1",
+  });
+  try {
+    for (const [name, args] of dispatchedRaidLensMutations) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true, name);
+      assert.doesNotMatch(result.structuredContent.error, /Unknown tool/, name);
+      assert.match(result.structuredContent.error, /^(Argument|Either) /, name);
+    }
+  } finally {
+    await client.close();
+  }
+});
+
+test("RaidLens policy rejects direct dispatch of every other mutation", async () => {
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_ENABLE_APPLICATIONS: "true",
+    WOWAUDIT_ENABLE_WRITES: "true",
+    WOWAUDIT_WRITE_POLICY: "raidlens-create-update-v1",
+  });
+  try {
+    for (const [name, args] of deniedRaidLensMutations) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true, name);
+      assert.match(result.structuredContent.error, /Unknown tool/, name);
+    }
   } finally {
     await client.close();
   }

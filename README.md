@@ -54,7 +54,7 @@ A WoWAudit team API key can access the team's entire environment. The server app
 
 - The key is sent only as an `Authorization: Bearer` header. It is never put in a URL, result, or error.
 - Only documented `/v1/` routes are available. There is no arbitrary HTTP tool.
-- Write tools are not advertised or callable unless `WOWAUDIT_ENABLE_WRITES=true`. The HTTP client independently blocks mutation requests while disabled.
+- Write tools are not advertised or callable unless `WOWAUDIT_ENABLE_WRITES=true`. The HTTP client independently blocks mutation requests while disabled. Set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1` to limit enabled mutations to character tracking and updates, raid creation and updates, and wishlist uploads.
 - Destructive delete tools additionally require `confirm: true` on each call.
 - Application tools are disabled unless `WOWAUDIT_ENABLE_APPLICATIONS=true` because applications may contain identities, questionnaire answers, and uploaded-file URLs.
 - Tool annotations identify read-only, idempotent, and destructive operations to modern MCP clients.
@@ -65,20 +65,21 @@ Enabling application tools does not provide channel authorization. A Discord int
 
 ## Configuration
 
-| Variable                       |                    Default | Purpose                                 |
-| ------------------------------ | -------------------------: | --------------------------------------- |
-| `WOWAUDIT_API_KEY`             |     required for API calls | Team API key                            |
-| `WOWAUDIT_BASE_URL`            | `https://api.wowaudit.com` | API origin                              |
-| `WOWAUDIT_REQUEST_TIMEOUT_MS`  |                    `30000` | Request timeout, 5,000 to 120,000 ms    |
-| `WOWAUDIT_MAX_RESPONSE_BYTES`  |                  `2097152` | Maximum JSON response, 64 KiB to 10 MiB |
-| `WOWAUDIT_ENABLE_WRITES`       |                    `false` | Permit POST, PUT, and DELETE tools      |
-| `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools      |
+| Variable                       |                    Default | Purpose                                        |
+| ------------------------------ | -------------------------: | ---------------------------------------------- |
+| `WOWAUDIT_API_KEY`             |     required for API calls | Team API key                                   |
+| `WOWAUDIT_BASE_URL`            | `https://api.wowaudit.com` | API origin                                     |
+| `WOWAUDIT_REQUEST_TIMEOUT_MS`  |                    `30000` | Request timeout, 5,000 to 120,000 ms           |
+| `WOWAUDIT_MAX_RESPONSE_BYTES`  |                  `2097152` | Maximum JSON response, 64 KiB to 10 MiB        |
+| `WOWAUDIT_ENABLE_WRITES`       |                    `false` | Permit POST, PUT, and DELETE tools             |
+| `WOWAUDIT_WRITE_POLICY`        |                      unset | Restrict writes to `raidlens-create-update-v1` |
+| `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools             |
 
-The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface.
+The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist`; all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
 
 ## Tools
 
-Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true`. Application tools are only registered when `WOWAUDIT_ENABLE_APPLICATIONS=true`.
+Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true` and permitted by `WOWAUDIT_WRITE_POLICY`. Application tools are only registered when `WOWAUDIT_ENABLE_APPLICATIONS=true`.
 
 ### Team and roster
 
