@@ -61,22 +61,35 @@ A WoWAudit team API key can access the team's entire environment. The server app
 - Application tools are disabled unless `WOWAUDIT_ENABLE_APPLICATIONS=true` because applications may contain identities, questionnaire answers, and uploaded-file URLs.
 - Tool annotations identify read-only, idempotent, and destructive operations to modern MCP clients.
 - Responses are limited to 2 MiB by default. Adjust `WOWAUDIT_MAX_RESPONSE_BYTES` only when necessary.
-- GET responses are cached in process for 30 seconds. Successful writes clear the cache.
+- Successful GET responses use a child-local weighted LRU with 64 entries, 16 MiB total retained bytes, 4 MiB per entry, and at most 16 distinct upstream loads in flight. Values above the cache entry limit but within `WOWAUDIT_MAX_RESPONSE_BYTES` are returned uncached.
+- Cache keys contain only the HTTP method, API pathname, and sorted representation query. Credentials and the fixed base URL are excluded. Returned values are cloned, and failed or malformed responses are never retained.
+- Endpoint TTLs range from 15 seconds for raid detail to 10 minutes for team identity. Reads strictly refetch after expiry; stale data is not returned when revalidation fails.
+- Writes invalidate affected team, period, character, historical, attendance, wishlist, raid, and loot generations before HTTP dispatch. This also prevents a read started before a write from repopulating stale data after the write begins.
 
 Enabling application tools does not provide channel authorization. A Discord integration must enforce officer-only access before exposing those tools. Similarly, a multi-guild bot must bind its trusted Discord guild ID to the correct WoWAudit credential outside model-controlled tool arguments.
 
 ## Configuration
 
-| Variable                       |                    Default | Purpose                                        |
-| ------------------------------ | -------------------------: | ---------------------------------------------- |
-| `WOWAUDIT_API_KEY`             | required unless FD is used | Team API key, preserved without trimming       |
-| `WOWAUDIT_API_KEY_FD`          |                      unset | Inherited API key descriptor, 1 to 1024        |
-| `WOWAUDIT_BASE_URL`            | `https://api.wowaudit.com` | API origin                                     |
-| `WOWAUDIT_REQUEST_TIMEOUT_MS`  |                    `30000` | Request timeout, 5,000 to 120,000 ms           |
-| `WOWAUDIT_MAX_RESPONSE_BYTES`  |                  `2097152` | Maximum JSON response, 64 KiB to 10 MiB        |
-| `WOWAUDIT_ENABLE_WRITES`       |                    `false` | Permit POST, PUT, and DELETE tools             |
-| `WOWAUDIT_WRITE_POLICY`        |                      unset | Restrict writes to `raidlens-create-update-v1` |
-| `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools             |
+| Variable                              |                    Default | Purpose                                        |
+| ------------------------------------- | -------------------------: | ---------------------------------------------- |
+| `WOWAUDIT_API_KEY`                    | required unless FD is used | Team API key, preserved without trimming       |
+| `WOWAUDIT_API_KEY_FD`                 |                      unset | Inherited API key descriptor, 1 to 1024        |
+| `WOWAUDIT_BASE_URL`                   | `https://api.wowaudit.com` | API origin                                     |
+| `WOWAUDIT_REQUEST_TIMEOUT_MS`         |                    `30000` | Header and body timeout, 5,000 to 120,000 ms   |
+| `WOWAUDIT_MAX_RESPONSE_BYTES`         |                  `2097152` | Maximum JSON response, 64 KiB to 10 MiB        |
+| `WOWAUDIT_CACHE_MAX_ENTRIES`          |                       `64` | Completed response entry limit                 |
+| `WOWAUDIT_CACHE_MAX_BYTES`            |                 `16777216` | Completed response retained-byte limit         |
+| `WOWAUDIT_CACHE_MAX_ENTRY_BYTES`      |                  `4194304` | Per-response retained-byte limit               |
+| `WOWAUDIT_WISHLIST_MARKER_VALIDATION` |                    `false` | Enable validated wishlist retention experiment |
+| `WOWAUDIT_ENABLE_WRITES`              |                    `false` | Permit POST, PUT, and DELETE tools             |
+| `WOWAUDIT_WRITE_POLICY`               |                      unset | Restrict writes to `raidlens-create-update-v1` |
+| `WOWAUDIT_ENABLE_APPLICATIONS`        |                    `false` | Permit sensitive application tools             |
+
+Cache retained bytes include the UTF-8 cache key and serialized JSON value. Application reads use the unknown-GET 30-second TTL when enabled. Mutations, errors, credentials, authorization decisions, MCP results, and projected model output are not cached. `refresh: true` on RaidLens read tools removes a completed entry before lookup but joins an already active load for the same canonical resource; omitted refresh and `refresh: false` are equivalent.
+
+`WOWAUDIT_WISHLIST_MARKER_VALIDATION` must remain false until an operator verifies `wishlist_updated_at` monotonicity across three authorized non-production wishlist edits. Disabled mode refetches the full wishlist after its normal five-minute TTL. Enabled mode retains a wishlist body for no more than 30 minutes and performs an uncached `/v1/team` marker probe every 60 seconds. Equal markers extend validation only, while larger, missing, malformed, or decreasing markers force a full refetch. Probe failures return the upstream error rather than stale wishlist data.
+
+Successful protocol results include non-model-visible `_meta["raidlens/cache"]` telemetry with finite source/outcome labels and numeric duration and byte fields. The same data is not added to `structuredContent` or the text fallback.
 
 The default configuration exposes 14 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes the 14 non-sensitive GET tools plus only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist` when writes are enabled. All application tools are suppressed regardless of `WOWAUDIT_ENABLE_APPLICATIONS`, and all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
 
@@ -163,6 +176,8 @@ Successful tools, including `wowaudit_get_team`, return the canonical `{ data, m
 Collection tools accepting `limit` additionally report `totalItems`, `returnedItems`, and `truncated`. The limit is applied after WoWAudit responds because the public API does not document server-side pagination.
 
 Errors return `isError: true`, structured `{ "error": "..." }`, and a text fallback. Upstream errors also include `kind`, HTTP `status`, and `retryAfterSeconds` when available.
+
+The HTTP response limit is enforced while reading decoded body chunks under the same deadline used for response headers. Non-JSON error responses retain the HTTP status and only a bounded, credential-redacted plain-text detail. `Retry-After` delta seconds and future HTTP dates are exposed as a delay capped at one hour.
 
 ## Development
 

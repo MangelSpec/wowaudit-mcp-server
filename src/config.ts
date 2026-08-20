@@ -7,6 +7,9 @@ const MAX_REQUEST_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_CACHE_MAX_ENTRIES = 64;
+const DEFAULT_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const DEFAULT_CACHE_MAX_ENTRY_BYTES = 4 * 1024 * 1024;
 const MAX_API_KEY_FD = 1024;
 
 let cachedFdApiKey: string | undefined;
@@ -18,6 +21,10 @@ export interface WowAuditConfig {
   baseUrl: string;
   requestTimeoutMs: number;
   maxResponseBytes: number;
+  cacheMaxEntries: number;
+  cacheMaxBytes: number;
+  cacheMaxEntryBytes: number;
+  wishlistMarkerValidation: boolean;
   writesEnabled: boolean;
   applicationsEnabled: boolean;
   writePolicy: WowAuditWritePolicy;
@@ -51,6 +58,32 @@ export function getConfig(): WowAuditConfig {
       DEFAULT_MAX_RESPONSE_BYTES,
       MIN_MAX_RESPONSE_BYTES,
       MAX_MAX_RESPONSE_BYTES,
+    ),
+    cacheMaxEntries: parseBoundedInteger(
+      "WOWAUDIT_CACHE_MAX_ENTRIES",
+      process.env.WOWAUDIT_CACHE_MAX_ENTRIES,
+      DEFAULT_CACHE_MAX_ENTRIES,
+      1,
+      1024,
+    ),
+    cacheMaxBytes: parseBoundedInteger(
+      "WOWAUDIT_CACHE_MAX_BYTES",
+      process.env.WOWAUDIT_CACHE_MAX_BYTES,
+      DEFAULT_CACHE_MAX_BYTES,
+      1,
+      1024 * 1024 * 1024,
+    ),
+    cacheMaxEntryBytes: parseBoundedInteger(
+      "WOWAUDIT_CACHE_MAX_ENTRY_BYTES",
+      process.env.WOWAUDIT_CACHE_MAX_ENTRY_BYTES,
+      DEFAULT_CACHE_MAX_ENTRY_BYTES,
+      1,
+      1024 * 1024 * 1024,
+    ),
+    wishlistMarkerValidation: parseBoolean(
+      "WOWAUDIT_WISHLIST_MARKER_VALIDATION",
+      process.env.WOWAUDIT_WISHLIST_MARKER_VALIDATION,
+      false,
     ),
     ...getFeatureFlags(),
   };

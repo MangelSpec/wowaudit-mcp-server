@@ -85,6 +85,13 @@ const LIMIT_PROPERTY = {
     "Maximum top-level collection entries returned after WoWAudit responds. The upstream API does not document pagination.",
 } as const;
 
+const REFRESH_PROPERTY = {
+  type: "boolean",
+  default: false,
+  description:
+    "Bypass a completed cached response and share any active refresh for the same resource.",
+} as const;
+
 const WISHLIST_RESULT_LIMIT_PROPERTY = {
   type: "integer",
   minimum: 1,
@@ -200,11 +207,15 @@ function defineTool(
   execute: ToolDescriptor["execute"],
   outputSchema: Tool["outputSchema"] = OUTPUT_SCHEMA,
 ): ToolDescriptor {
+  const effectiveInputSchema =
+    annotations?.readOnlyHint && RAIDLENS_TOOLS.has(name)
+      ? withRefreshInput(inputSchema)
+      : inputSchema;
   return {
     definition: {
       name,
       description,
-      inputSchema,
+      inputSchema: effectiveInputSchema,
       outputSchema,
       annotations,
     },
@@ -212,10 +223,13 @@ function defineTool(
   };
 }
 
-async function getTeam(): Promise<Record<string, unknown>> {
+async function getTeam(args: Args): Promise<Record<string, unknown>> {
   const endpoint = "/v1/team";
   const method = "GET";
-  const raw = await requestWowAudit(endpoint, { method });
+  const raw = await requestWowAudit(endpoint, {
+    method,
+    refresh: optionalBoolean(args, "refresh"),
+  });
   return {
     data: normalizeTeam(raw),
     meta: { endpoint, method },
@@ -261,6 +275,7 @@ async function call(
     body?: Record<string, unknown>;
     limit?: number;
     collectionKey?: string;
+    refresh?: boolean;
   } = {},
 ): Promise<Record<string, unknown>> {
   const method = options.method ?? "GET";
@@ -268,6 +283,7 @@ async function call(
     method,
     query: options.query,
     body: options.body,
+    refresh: options.refresh,
   });
   return shapeResult(
     raw,
@@ -276,6 +292,18 @@ async function call(
     options.limit,
     options.collectionKey,
   ) as unknown as Record<string, unknown>;
+}
+
+function withRefreshInput(
+  inputSchema: Tool["inputSchema"],
+): Tool["inputSchema"] {
+  return {
+    ...inputSchema,
+    properties: {
+      ...(inputSchema.properties ?? {}),
+      refresh: REFRESH_PROPERTY,
+    },
+  } as Tool["inputSchema"];
 }
 
 function shapeResult(
@@ -320,6 +348,20 @@ function shapeResult(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function resolvePeriod(args: Args, refresh?: boolean): Promise<number> {
+  const provided = optionalPositiveInteger(args, "period");
+  if (provided !== undefined) return provided;
+  const periodResult = await requestWowAudit("/v1/period", { refresh });
+  if (
+    !isRecord(periodResult) ||
+    !Number.isSafeInteger(periodResult.current_period) ||
+    (periodResult.current_period as number) < 1
+  ) {
+    throw new Error("WoWAudit period response must contain current_period");
+  }
+  return periodResult.current_period as number;
 }
 
 function idInput(
@@ -379,7 +421,8 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     "Get the current Blizzard keystone period and WoWAudit season identifiers used by historical and loot tools.",
     EMPTY_INPUT,
     READ_ANNOTATIONS,
-    async () => call("/v1/period"),
+    async (args) =>
+      call("/v1/period", { refresh: optionalBoolean(args, "refresh") }),
   ),
   defineTool(
     "wowaudit_list_characters",
@@ -389,6 +432,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     async (args) =>
       call("/v1/characters", {
         limit: optionalPositiveInteger(args, "limit"),
+        refresh: optionalBoolean(args, "refresh"),
       }),
   ),
   defineTool(
@@ -403,12 +447,16 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       limit: LIMIT_PROPERTY,
     }),
     READ_ANNOTATIONS,
-    async (args) =>
-      call("/v1/historical_data", {
-        query: { period: optionalPositiveInteger(args, "period") },
+    async (args) => {
+      const refresh = optionalBoolean(args, "refresh");
+      const period = await resolvePeriod(args, refresh);
+      return call("/v1/historical_data", {
+        query: { period },
         limit: optionalPositiveInteger(args, "limit"),
         collectionKey: "characters",
-      }),
+        refresh,
+      });
+    },
   ),
   defineTool(
     "wowaudit_get_character_history",
@@ -416,7 +464,9 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     idInput("WoWAudit character ID."),
     READ_ANNOTATIONS,
     async (args) =>
-      call(`/v1/historical_data/${requirePositiveInteger(args, "id")}`),
+      call(`/v1/historical_data/${requirePositiveInteger(args, "id")}`, {
+        refresh: optionalBoolean(args, "refresh"),
+      }),
   ),
   defineTool(
     "wowaudit_list_raids",
@@ -435,6 +485,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         query: { include_past: optionalBoolean(args, "includePast") },
         limit: optionalPositiveInteger(args, "limit"),
         collectionKey: "raids",
+        refresh: optionalBoolean(args, "refresh"),
       }),
   ),
   defineTool(
@@ -442,7 +493,10 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     "Get a raid's detailed signups, comments, selections, and enabled encounter plan.",
     idInput("WoWAudit raid ID."),
     READ_ANNOTATIONS,
-    async (args) => call(`/v1/raids/${requirePositiveInteger(args, "id")}`),
+    async (args) =>
+      call(`/v1/raids/${requirePositiveInteger(args, "id")}`, {
+        refresh: optionalBoolean(args, "refresh"),
+      }),
   ),
   defineTool(
     "wowaudit_get_attendance",
@@ -477,6 +531,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
         },
         limit: optionalPositiveInteger(args, "limit"),
         collectionKey: "characters",
+        refresh: optionalBoolean(args, "refresh"),
       });
     },
   ),
@@ -489,6 +544,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       call("/v1/wishlists", {
         limit: optionalPositiveInteger(args, "limit"),
         collectionKey: "characters",
+        refresh: optionalBoolean(args, "refresh"),
       }),
   ),
   defineTool(
@@ -496,7 +552,10 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     "Get detailed Droptimizer wishlist data for one character.",
     idInput("WoWAudit character ID."),
     READ_ANNOTATIONS,
-    async (args) => call(`/v1/wishlists/${requirePositiveInteger(args, "id")}`),
+    async (args) =>
+      call(`/v1/wishlists/${requirePositiveInteger(args, "id")}`, {
+        refresh: optionalBoolean(args, "refresh"),
+      }),
   ),
   defineTool(
     "wowaudit_list_wishlist_items",
@@ -514,11 +573,16 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     }),
     READ_ANNOTATIONS,
     async (args) =>
-      projectWishlistItems(await requestWowAudit("/v1/wishlists"), {
-        slot: optionalString(args, "slot"),
-        offset: optionalNonNegativeInteger(args, "offset"),
-        limit: optionalPositiveInteger(args, "limit"),
-      }) as unknown as Record<string, unknown>,
+      projectWishlistItems(
+        await requestWowAudit("/v1/wishlists", {
+          refresh: optionalBoolean(args, "refresh"),
+        }),
+        {
+          slot: optionalString(args, "slot"),
+          offset: optionalNonNegativeInteger(args, "offset"),
+          limit: optionalPositiveInteger(args, "limit"),
+        },
+      ) as unknown as Record<string, unknown>,
   ),
   defineTool(
     "wowaudit_find_wishlisted_item",
@@ -547,14 +611,19 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       if (itemId === undefined && itemName === undefined) {
         throw new Error('Either "itemId" or "itemName" must be provided');
       }
-      return projectWishlistItems(await requestWowAudit("/v1/wishlists"), {
-        itemId,
-        itemName,
-        match: optionalEnum(args, "match", ["exact", "contains"] as const),
-        slot: optionalString(args, "slot"),
-        offset: optionalNonNegativeInteger(args, "offset"),
-        limit: optionalPositiveInteger(args, "limit"),
-      }) as unknown as Record<string, unknown>;
+      return projectWishlistItems(
+        await requestWowAudit("/v1/wishlists", {
+          refresh: optionalBoolean(args, "refresh"),
+        }),
+        {
+          itemId,
+          itemName,
+          match: optionalEnum(args, "match", ["exact", "contains"] as const),
+          slot: optionalString(args, "slot"),
+          offset: optionalNonNegativeInteger(args, "offset"),
+          limit: optionalPositiveInteger(args, "limit"),
+        },
+      ) as unknown as Record<string, unknown>;
     },
   ),
   defineTool(
@@ -572,22 +641,12 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     }),
     READ_ANNOTATIONS,
     async (args) => {
-      let period = optionalPositiveInteger(args, "period");
-      if (period === undefined) {
-        const periodResult = await requestWowAudit("/v1/period");
-        if (
-          !isRecord(periodResult) ||
-          !Number.isSafeInteger(periodResult.current_period)
-        ) {
-          throw new Error(
-            "WoWAudit period response must contain current_period",
-          );
-        }
-        period = periodResult.current_period as number;
-      }
+      const refresh = optionalBoolean(args, "refresh");
+      const period = await resolvePeriod(args, refresh);
       return projectWeeklyRosterSummary(
         await requestWowAudit("/v1/historical_data", {
           query: { period },
+          refresh,
         }),
         period,
         {
@@ -616,6 +675,7 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
       call(`/v1/loot_history/${requirePositiveInteger(args, "seasonId")}`, {
         limit: optionalPositiveInteger(args, "limit"),
         collectionKey: "history_items",
+        refresh: optionalBoolean(args, "refresh"),
       }),
   ),
   defineTool(

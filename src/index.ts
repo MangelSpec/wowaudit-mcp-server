@@ -5,8 +5,9 @@ import { config as loadDotenv } from "dotenv";
 import { Server, type CallToolRequest } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
-import { WowAuditApiError } from "./client.js";
-import { err, ok } from "./toolResult.js";
+import { shutdownResponseCache, WowAuditApiError } from "./client.js";
+import { withCacheTelemetry } from "./cacheTelemetry.js";
+import { attachCacheTelemetry, err, ok } from "./toolResult.js";
 import { findTool, getAvailableTools } from "./tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,27 +31,39 @@ async function handleToolCall(request: CallToolRequest) {
 
   const rawArgs = request.params.arguments ?? {};
   const args = rawArgs as Record<string, unknown>;
-  try {
-    return ok(await descriptor.execute(args));
-  } catch (error) {
-    if (error instanceof WowAuditApiError) {
-      return err(error.message, {
-        kind:
-          error.status === 429
-            ? "rate_limit"
-            : error.status === null
-              ? "network"
-              : "upstream",
-        status: error.status,
-        retryAfterSeconds: error.retryAfterSeconds,
-      });
+  const { value, telemetry } = await withCacheTelemetry(async () => {
+    try {
+      return ok(await descriptor.execute(args));
+    } catch (error) {
+      if (error instanceof WowAuditApiError) {
+        return err(error.message, {
+          kind:
+            error.status === 429
+              ? "rate_limit"
+              : error.status === null
+                ? "network"
+                : "upstream",
+          status: error.status,
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+      }
+      return err(error instanceof Error ? error.message : String(error));
     }
-    return err(error instanceof Error ? error.message : String(error));
-  }
+  });
+  return attachCacheTelemetry(value, telemetry);
 }
 
 function main(): void {
   const tools = getAvailableTools();
+  process.once("exit", shutdownResponseCache);
+  process.once("SIGINT", () => {
+    shutdownResponseCache();
+    process.exit(130);
+  });
+  process.once("SIGTERM", () => {
+    shutdownResponseCache();
+    process.exit(143);
+  });
   serveStdio(createServer, {
     legacy: "serve",
     onerror: (error) => console.error("MCP server error:", error),

@@ -1,5 +1,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/server";
 
+import type { CacheTelemetry } from "./cacheTelemetry.js";
+
 export function ok(data: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -24,4 +26,13 @@ export function err(
     isError: true,
     structuredContent,
   };
+}
+
+export function attachCacheTelemetry(
+  result: CallToolResult,
+  telemetry: CacheTelemetry | undefined,
+): CallToolResult {
+  return telemetry
+    ? { ...result, _meta: { ...result._meta, "raidlens/cache": telemetry } }
+    : result;
 }

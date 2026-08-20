@@ -66,6 +66,36 @@ test("validates bounded integer configuration", () => {
   );
 });
 
+test("loads bounded cache settings and keeps marker validation disabled", () => {
+  process.env.WOWAUDIT_API_KEY = "test-key";
+  assert.equal(getConfig().cacheMaxEntries, 64);
+  assert.equal(getConfig().cacheMaxBytes, 16_777_216);
+  assert.equal(getConfig().cacheMaxEntryBytes, 4_194_304);
+  assert.equal(getConfig().wishlistMarkerValidation, false);
+
+  process.env.WOWAUDIT_CACHE_MAX_ENTRIES = "7";
+  process.env.WOWAUDIT_CACHE_MAX_BYTES = "1000";
+  process.env.WOWAUDIT_CACHE_MAX_ENTRY_BYTES = "500";
+  process.env.WOWAUDIT_WISHLIST_MARKER_VALIDATION = "true";
+  const configured = getConfig();
+  assert.equal(configured.cacheMaxEntries, 7);
+  assert.equal(configured.cacheMaxBytes, 1000);
+  assert.equal(configured.cacheMaxEntryBytes, 500);
+  assert.equal(configured.wishlistMarkerValidation, true);
+
+  process.env.WOWAUDIT_CACHE_MAX_ENTRIES = "0";
+  assert.throws(
+    () => getConfig(),
+    /WOWAUDIT_CACHE_MAX_ENTRIES must be between/,
+  );
+  process.env.WOWAUDIT_CACHE_MAX_ENTRIES = "7";
+  process.env.WOWAUDIT_WISHLIST_MARKER_VALIDATION = "yes";
+  assert.throws(
+    () => getConfig(),
+    /WOWAUDIT_WISHLIST_MARKER_VALIDATION must be true or false/,
+  );
+});
+
 test("accepts only the exact documented write policy", () => {
   assert.equal(parseWritePolicy(undefined), undefined);
   assert.equal(parseWritePolicy(""), undefined);

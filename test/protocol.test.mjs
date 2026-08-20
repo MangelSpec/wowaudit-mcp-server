@@ -119,6 +119,13 @@ for (const mode of ["auto", "legacy"]) {
       assert.ok(tools.every((tool) => tool.outputSchema?.type === "object"));
       assert.ok(tools.every((tool) => tool.name.startsWith("wowaudit_")));
       assert.ok(tools.every((tool) => tool.annotations?.readOnlyHint === true));
+      assert.ok(
+        tools.every(
+          (tool) =>
+            tool.inputSchema.properties.refresh?.type === "boolean" &&
+            tool.inputSchema.properties.refresh?.default === false,
+        ),
+      );
 
       const roster = tools.find(
         (tool) => tool.name === "wowaudit_list_characters",
@@ -290,6 +297,27 @@ test("reuses inherited FD 3 for multiple authenticated requests without logging 
       arguments: {},
     });
     assert.equal(teamResult.isError, undefined);
+    assert.ok(Object.hasOwn(teamResult._meta ?? {}, "raidlens/cache"));
+    assert.equal(teamResult._meta["raidlens/cache"].source, "wowaudit");
+    assert.ok(
+      [
+        "hit",
+        "miss",
+        "coalesced",
+        "refresh",
+        "bypass",
+        "skip_oversize",
+        "load_error",
+        "evicted",
+      ].includes(teamResult._meta["raidlens/cache"].outcome),
+    );
+    for (const field of ["durationMs", "decodedBytes", "retainedBytes"]) {
+      assert.equal(typeof teamResult._meta["raidlens/cache"][field], "number");
+    }
+    assert.equal(
+      JSON.stringify(teamResult.structuredContent).includes("raidlens/cache"),
+      false,
+    );
     assert.deepEqual(teamResult.structuredContent, {
       data: { teamId: "42", teamDisplayName: "RaidLens Team" },
       meta: { endpoint: "/v1/team", method: "GET" },
