@@ -11,6 +11,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 const serverEntry = path.resolve("dist/index.js");
 const fdLauncherEntry = path.resolve("scripts/test-fd-launcher.mjs");
 const expectedReadTools = [
+  "wowaudit_find_wishlisted_item",
   "wowaudit_get_attendance",
   "wowaudit_get_character_history",
   "wowaudit_get_character_wishlist",
@@ -18,9 +19,11 @@ const expectedReadTools = [
   "wowaudit_get_period",
   "wowaudit_get_raid",
   "wowaudit_get_team",
+  "wowaudit_get_weekly_roster_summary",
   "wowaudit_list_characters",
   "wowaudit_list_historical_data",
   "wowaudit_list_raids",
+  "wowaudit_list_wishlist_items",
   "wowaudit_list_wishlists",
 ];
 const expectedTools = [
@@ -28,6 +31,7 @@ const expectedTools = [
   "wowaudit_delete_application",
   "wowaudit_delete_raid",
   "wowaudit_delete_wishlist",
+  "wowaudit_find_wishlisted_item",
   "wowaudit_get_application",
   "wowaudit_get_attendance",
   "wowaudit_get_character_history",
@@ -36,10 +40,12 @@ const expectedTools = [
   "wowaudit_get_period",
   "wowaudit_get_raid",
   "wowaudit_get_team",
+  "wowaudit_get_weekly_roster_summary",
   "wowaudit_list_applications",
   "wowaudit_list_characters",
   "wowaudit_list_historical_data",
   "wowaudit_list_raids",
+  "wowaudit_list_wishlist_items",
   "wowaudit_list_wishlists",
   "wowaudit_track_character",
   "wowaudit_untrack_character",
@@ -105,7 +111,7 @@ for (const mode of ["auto", "legacy"]) {
     const client = await connect(mode);
     try {
       const { tools } = await client.listTools();
-      assert.equal(tools.length, 11);
+      assert.equal(tools.length, 14);
       assert.deepEqual(
         tools.map((tool) => tool.name).sort(),
         expectedReadTools,
@@ -154,7 +160,7 @@ test("registers the complete surface only when both feature gates are enabled", 
   });
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 23);
+    assert.equal(tools.length, 26);
     assert.deepEqual(tools.map((tool) => tool.name).sort(), expectedTools);
 
     const deleteRaid = tools.find(
@@ -307,6 +313,147 @@ test("reuses inherited FD 3 for multiple authenticated requests without logging 
       upstream.close((error) => (error ? reject(error) : resolve())),
     );
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("returns compact guild-wide wishlist and weekly roster projections", async () => {
+  const requests = [];
+  const upstream = createHttpServer((request, response) => {
+    requests.push(request.url);
+    response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/v1/period") {
+      response.end(JSON.stringify({ current_period: 1077 }));
+      return;
+    }
+    if (request.url === "/v1/historical_data?period=1077") {
+      response.end(
+        JSON.stringify({
+          characters: [
+            {
+              id: 1,
+              name: "Anna",
+              realm: "Example",
+              data: {
+                dungeons_done: [{ level: 12, dungeon: 1 }],
+                world_quests_done: 7,
+                vault_options: { dungeons: { option_1: 324 } },
+              },
+            },
+          ],
+        }),
+      );
+      return;
+    }
+    response.end(
+      JSON.stringify({
+        characters: [
+          {
+            id: 1,
+            name: "Anna",
+            realm: "Example",
+            wishlists: [
+              {
+                name: "Raid",
+                instances: [
+                  {
+                    name: "Test Raid",
+                    difficulties: [
+                      {
+                        difficulty: "mythic",
+                        wishlist: {
+                          wishlist: {
+                            encounters: [
+                              {
+                                name: "Test Boss",
+                                items: [
+                                  {
+                                    id: 100,
+                                    name: "Heart of Tests",
+                                    slot: "trinket",
+                                    wishes: [
+                                      {
+                                        specialization: "Holy",
+                                        weight: 1,
+                                        percentage: 1.25,
+                                        absolute: null,
+                                        upgrade: null,
+                                      },
+                                    ],
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_BASE_URL: `http://127.0.0.1:${address.port}`,
+  });
+  try {
+    const wishlist = await client.callTool({
+      name: "wowaudit_find_wishlisted_item",
+      arguments: { itemName: "Heart of Tests" },
+    });
+    assert.equal(wishlist.isError, undefined);
+    assert.deepEqual(wishlist.structuredContent.data.matches, [
+      {
+        characterId: 1,
+        characterName: "Anna",
+        realm: "Example",
+        configuration: "Raid",
+        instance: "Test Raid",
+        difficulty: "mythic",
+        encounter: "Test Boss",
+        itemId: 100,
+        itemName: "Heart of Tests",
+        slot: "trinket",
+        specialization: "Holy",
+        weight: 1,
+        percentage: 1.25,
+        absolute: null,
+        upgrade: null,
+      },
+    ]);
+
+    const weekly = await client.callTool({
+      name: "wowaudit_get_weekly_roster_summary",
+      arguments: {},
+    });
+    assert.equal(weekly.isError, undefined);
+    assert.equal(weekly.structuredContent.data.period, 1077);
+    assert.equal(
+      weekly.structuredContent.data.characters[0].highestDungeonLevel,
+      12,
+    );
+    assert.equal(
+      weekly.structuredContent.data.characters[0].vault.dungeons.unlockedCount,
+      1,
+    );
+    assert.deepEqual(requests, [
+      "/v1/wishlists",
+      "/v1/period",
+      "/v1/historical_data?period=1077",
+    ]);
+  } finally {
+    await client.close();
+    await new Promise((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 

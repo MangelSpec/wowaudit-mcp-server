@@ -60,6 +60,18 @@ export function optionalPositiveInteger(
   return requirePositiveInteger(args, key);
 }
 
+export function optionalNonNegativeInteger(
+  args: Args,
+  key: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined || value === null) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`Argument "${key}" must be a non-negative integer`);
+  }
+  return value as number;
+}
+
 export function optionalBoolean(args: Args, key: string): boolean | undefined {
   const value = args[key];
   if (value === undefined || value === null) return undefined;

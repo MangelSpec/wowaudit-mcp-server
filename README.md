@@ -78,7 +78,7 @@ Enabling application tools does not provide channel authorization. A Discord int
 | `WOWAUDIT_WRITE_POLICY`        |                      unset | Restrict writes to `raidlens-create-update-v1` |
 | `WOWAUDIT_ENABLE_APPLICATIONS` |                    `false` | Permit sensitive application tools             |
 
-The default configuration exposes 11 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes the 11 non-sensitive GET tools plus only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist` when writes are enabled. All application tools are suppressed regardless of `WOWAUDIT_ENABLE_APPLICATIONS`, and all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
+The default configuration exposes 14 non-sensitive GET tools. Setting `WOWAUDIT_ENABLE_APPLICATIONS=true` adds the two read-only application tools. Setting `WOWAUDIT_ENABLE_WRITES=true` adds mutation tools; leave it unset for a strictly read-only MCP surface. For RaidLens, also set `WOWAUDIT_WRITE_POLICY=raidlens-create-update-v1`. This policy exposes the 14 non-sensitive GET tools plus only `wowaudit_track_character`, `wowaudit_update_character`, `wowaudit_create_raid`, `wowaudit_update_raid`, and `wowaudit_upload_wishlist` when writes are enabled. All application tools are suppressed regardless of `WOWAUDIT_ENABLE_APPLICATIONS`, and all other mutations remain absent and uncallable. Unknown non-empty policy values prevent startup. Omitting the policy preserves the existing general write surface for current consumers.
 
 ## Tools
 
@@ -97,11 +97,12 @@ Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true
 
 ### Activity and attendance
 
-| Tool                             | API operation                  |
-| -------------------------------- | ------------------------------ |
-| `wowaudit_list_historical_data`  | `GET /v1/historical_data`      |
-| `wowaudit_get_character_history` | `GET /v1/historical_data/{id}` |
-| `wowaudit_get_attendance`        | `GET /v1/attendance`           |
+| Tool                                 | API operation                                  |
+| ------------------------------------ | ---------------------------------------------- |
+| `wowaudit_list_historical_data`      | `GET /v1/historical_data`                      |
+| `wowaudit_get_character_history`     | `GET /v1/historical_data/{id}`                 |
+| `wowaudit_get_weekly_roster_summary` | compact current-period activity and vault rows |
+| `wowaudit_get_attendance`            | `GET /v1/attendance`                           |
 
 ### Raids and signups
 
@@ -117,15 +118,17 @@ Mutation tools shown below are only registered when `WOWAUDIT_ENABLE_WRITES=true
 
 ### Wishlists and loot
 
-| Tool                              | API operation                     |
-| --------------------------------- | --------------------------------- |
-| `wowaudit_list_wishlists`         | `GET /v1/wishlists`               |
-| `wowaudit_get_character_wishlist` | `GET /v1/wishlists/{id}`          |
-| `wowaudit_upload_wishlist`        | `POST /v1/wishlists`              |
-| `wowaudit_delete_wishlist`        | `DELETE /v1/wishlists/{id}`       |
-| `wowaudit_get_loot_history`       | `GET /v1/loot_history/{seasonId}` |
+| Tool                              | API operation                                          |
+| --------------------------------- | ------------------------------------------------------ |
+| `wowaudit_list_wishlists`         | `GET /v1/wishlists`                                    |
+| `wowaudit_get_character_wishlist` | `GET /v1/wishlists/{id}`                               |
+| `wowaudit_list_wishlist_items`    | compact item rows from `GET /v1/wishlists`             |
+| `wowaudit_find_wishlisted_item`   | character demand for one item from `GET /v1/wishlists` |
+| `wowaudit_upload_wishlist`        | `POST /v1/wishlists`                                   |
+| `wowaudit_delete_wishlist`        | `DELETE /v1/wishlists/{id}`                            |
+| `wowaudit_get_loot_history`       | `GET /v1/loot_history/{seasonId}`                      |
 
-The all-character wishlist and loot endpoints can be large. Prefer character-specific calls and use `limit` on collection tools where possible.
+The all-character wishlist and loot endpoints can be large. Prefer character-specific calls for one player. Use `wowaudit_list_wishlist_items` for a compact paginated guild item table, optionally filtered by slot, and `wowaudit_find_wishlisted_item` to find demand for one item by item ID or name.
 
 ### Applications
 

@@ -1,7 +1,9 @@
 import type { Tool } from "@modelcontextprotocol/server";
 
+import { projectWeeklyRosterSummary } from "./activity.js";
 import { requestWowAudit, type HttpMethod } from "./client.js";
 import { getConfig, getFeatureFlags } from "./config.js";
+import { projectWishlistItems } from "./wishlist.js";
 import {
   compactObject,
   optionalDate,
@@ -9,6 +11,7 @@ import {
   optionalEnum,
   optionalIntegerArray,
   optionalObjectArray,
+  optionalNonNegativeInteger,
   optionalPositiveInteger,
   optionalString,
   requireConfirmation,
@@ -61,6 +64,9 @@ const RAIDLENS_TOOLS = new Set([
   "wowaudit_update_raid",
   "wowaudit_list_wishlists",
   "wowaudit_get_character_wishlist",
+  "wowaudit_list_wishlist_items",
+  "wowaudit_find_wishlisted_item",
+  "wowaudit_get_weekly_roster_summary",
   "wowaudit_upload_wishlist",
   "wowaudit_get_loot_history",
 ]);
@@ -77,6 +83,21 @@ const LIMIT_PROPERTY = {
   maximum: 500,
   description:
     "Maximum top-level collection entries returned after WoWAudit responds. The upstream API does not document pagination.",
+} as const;
+
+const WISHLIST_RESULT_LIMIT_PROPERTY = {
+  type: "integer",
+  minimum: 1,
+  maximum: 100,
+  default: 50,
+  description: "Maximum normalized wishlist rows returned.",
+} as const;
+
+const WISHLIST_RESULT_OFFSET_PROPERTY = {
+  type: "integer",
+  minimum: 0,
+  default: 0,
+  description: "Zero-based offset into the normalized wishlist rows.",
 } as const;
 
 const TEAM_ID_MAX_LENGTH = 128;
@@ -476,6 +497,105 @@ export const TOOL_DESCRIPTORS: ToolDescriptor[] = [
     idInput("WoWAudit character ID."),
     READ_ANNOTATIONS,
     async (args) => call(`/v1/wishlists/${requirePositiveInteger(args, "id")}`),
+  ),
+  defineTool(
+    "wowaudit_list_wishlist_items",
+    "List compact wishlist rows across all characters, optionally filtered by equipment slot. Includes configuration, encounter, difficulty, specialization, and gain. Follow meta.nextOffset until null when the complete table is requested.",
+    mutationInput({
+      slot: {
+        type: "string",
+        minLength: 1,
+        maxLength: 100,
+        description:
+          'Optional WoWAudit slot such as "trinket", "head", or "finger".',
+      },
+      offset: WISHLIST_RESULT_OFFSET_PROPERTY,
+      limit: WISHLIST_RESULT_LIMIT_PROPERTY,
+    }),
+    READ_ANNOTATIONS,
+    async (args) =>
+      projectWishlistItems(await requestWowAudit("/v1/wishlists"), {
+        slot: optionalString(args, "slot"),
+        offset: optionalNonNegativeInteger(args, "offset"),
+        limit: optionalPositiveInteger(args, "limit"),
+      }) as unknown as Record<string, unknown>,
+  ),
+  defineTool(
+    "wowaudit_find_wishlisted_item",
+    "Find which characters have one item wishlisted and return each configuration-specific gain. Match by exact item ID or by case-insensitive item name, with an optional equipment-slot filter.",
+    {
+      type: "object",
+      properties: {
+        itemId: { type: "integer", minimum: 1 },
+        itemName: { type: "string", minLength: 1, maxLength: 200 },
+        match: {
+          type: "string",
+          enum: ["exact", "contains"],
+          default: "exact",
+        },
+        slot: { type: "string", minLength: 1, maxLength: 100 },
+        offset: WISHLIST_RESULT_OFFSET_PROPERTY,
+        limit: WISHLIST_RESULT_LIMIT_PROPERTY,
+      },
+      anyOf: [{ required: ["itemId"] }, { required: ["itemName"] }],
+      additionalProperties: false,
+    },
+    READ_ANNOTATIONS,
+    async (args) => {
+      const itemId = optionalPositiveInteger(args, "itemId");
+      const itemName = optionalString(args, "itemName");
+      if (itemId === undefined && itemName === undefined) {
+        throw new Error('Either "itemId" or "itemName" must be provided');
+      }
+      return projectWishlistItems(await requestWowAudit("/v1/wishlists"), {
+        itemId,
+        itemName,
+        match: optionalEnum(args, "match", ["exact", "contains"] as const),
+        slot: optionalString(args, "slot"),
+        offset: optionalNonNegativeInteger(args, "offset"),
+        limit: optionalPositiveInteger(args, "limit"),
+      }) as unknown as Record<string, unknown>;
+    },
+  ),
+  defineTool(
+    "wowaudit_get_weekly_roster_summary",
+    "Get a compact guild-wide weekly activity and Great Vault summary. Uses the current WoWAudit period unless period is provided, then returns deterministic paginated character rows.",
+    mutationInput({
+      period: {
+        type: "integer",
+        minimum: 1,
+        description:
+          "Optional Blizzard period. Defaults to the current WoWAudit period.",
+      },
+      offset: WISHLIST_RESULT_OFFSET_PROPERTY,
+      limit: WISHLIST_RESULT_LIMIT_PROPERTY,
+    }),
+    READ_ANNOTATIONS,
+    async (args) => {
+      let period = optionalPositiveInteger(args, "period");
+      if (period === undefined) {
+        const periodResult = await requestWowAudit("/v1/period");
+        if (
+          !isRecord(periodResult) ||
+          !Number.isSafeInteger(periodResult.current_period)
+        ) {
+          throw new Error(
+            "WoWAudit period response must contain current_period",
+          );
+        }
+        period = periodResult.current_period as number;
+      }
+      return projectWeeklyRosterSummary(
+        await requestWowAudit("/v1/historical_data", {
+          query: { period },
+        }),
+        period,
+        {
+          offset: optionalNonNegativeInteger(args, "offset"),
+          limit: optionalPositiveInteger(args, "limit"),
+        },
+      ) as unknown as Record<string, unknown>;
+    },
   ),
   defineTool(
     "wowaudit_get_loot_history",
