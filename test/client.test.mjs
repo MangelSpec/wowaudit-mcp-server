@@ -8,6 +8,7 @@ import {
   parseRetryAfter,
   requestWowAudit,
 } from "../dist/client.js";
+import { withCacheTelemetry } from "../dist/cacheTelemetry.js";
 
 const originalFetch = globalThis.fetch;
 const originalEnv = { ...process.env };
@@ -59,16 +60,22 @@ test("blocks mutations before issuing a network request", async () => {
 test("rejects oversized responses", async () => {
   process.env.WOWAUDIT_API_KEY = "test-team-key";
   process.env.WOWAUDIT_MAX_RESPONSE_BYTES = "65536";
+  const body = JSON.stringify({ value: "x".repeat(70_000) });
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ value: "x".repeat(70_000) }), {
+    new Response(body, {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-length": String(Buffer.byteLength(body)),
+        "content-type": "application/json",
+      },
     });
 
-  await assert.rejects(
-    requestWowAudit("/v1/team"),
-    /exceeded WOWAUDIT_MAX_RESPONSE_BYTES/,
-  );
+  await assert.rejects(requestWowAudit("/v1/team"), (error) => {
+    assert.match(error.message, /exceeded WOWAUDIT_MAX_RESPONSE_BYTES/);
+    assert.equal(error.decodedBytes, 0);
+    assert.ok(error.durationMs >= 0);
+    return true;
+  });
 });
 
 test("redacts the API key if an upstream error reflects it", async () => {
@@ -101,6 +108,42 @@ test("redacts the API key if the HTTP runtime rejects its exact value", async ()
     assert.match(error.message, /Bearer \[redacted\]/);
     return true;
   });
+});
+
+test("emits measured failure telemetry once for a coalesced load", async () => {
+  process.env.WOWAUDIT_API_KEY = "test-team-key";
+  let calls = 0;
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => {
+    releaseFetch = resolve;
+  });
+  globalThis.fetch = async () => {
+    calls += 1;
+    await fetchGate;
+    return new Response("upstream failed", {
+      status: 500,
+      statusText: "Internal Server Error",
+    });
+  };
+
+  const call = () =>
+    withCacheTelemetry(async () => {
+      await assert.rejects(requestWowAudit("/v1/team"), /API error 500/);
+    });
+  const first = call();
+  const second = call();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  releaseFetch();
+
+  const results = await Promise.all([first, second]);
+  const telemetry = results.flatMap((result) =>
+    result.telemetry ? [result.telemetry] : [],
+  );
+  assert.equal(calls, 1);
+  assert.equal(telemetry.length, 1);
+  assert.equal(telemetry[0].outcome, "load_error");
+  assert.ok(telemetry[0].durationMs > 0);
+  assert.equal(telemetry[0].decodedBytes, Buffer.byteLength("upstream failed"));
 });
 
 test("coalesces concurrent GETs and clones every returned value", async () => {
@@ -219,10 +262,12 @@ test("cancels a chunked response as soon as decoded bytes exceed the limit", asy
       { status: 200 },
     );
 
-  await assert.rejects(
-    requestWowAudit("/v1/team"),
-    /exceeded WOWAUDIT_MAX_RESPONSE_BYTES/,
-  );
+  await assert.rejects(requestWowAudit("/v1/team"), (error) => {
+    assert.match(error.message, /exceeded WOWAUDIT_MAX_RESPONSE_BYTES/);
+    assert.equal(error.decodedBytes, 80_000);
+    assert.ok(error.durationMs >= 0);
+    return true;
+  });
   assert.equal(cancelled, true);
 });
 
@@ -235,6 +280,11 @@ test("preserves bounded plain text for non-JSON upstream errors", async () => {
     });
   await assert.rejects(requestWowAudit("/v1/team"), (error) => {
     assert.equal(error.status, 503);
+    assert.equal(
+      error.decodedBytes,
+      Buffer.byteLength(`Denied secret-key ${"detail ".repeat(100)}`),
+    );
+    assert.ok(error.durationMs >= 0);
     assert.doesNotMatch(error.message, /secret-key/);
     assert.match(error.message, /Denied \[redacted\]/);
     assert.ok(error.message.length < 360);
@@ -247,6 +297,8 @@ test("classifies malformed successful JSON as an upstream protocol error", async
   globalThis.fetch = async () => new Response("{broken", { status: 200 });
   await assert.rejects(requestWowAudit("/v1/team"), (error) => {
     assert.equal(error.status, 200);
+    assert.equal(error.decodedBytes, Buffer.byteLength("{broken"));
+    assert.ok(error.durationMs >= 0);
     assert.match(error.message, /returned invalid JSON/);
     return true;
   });
@@ -272,7 +324,12 @@ test("one request deadline covers waiting for response headers", async () => {
         reject(new DOMException("aborted", "AbortError")),
       ),
     );
-  await assert.rejects(requestWowAudit("/v1/team"), /timed out after 5000ms/);
+  await assert.rejects(requestWowAudit("/v1/team"), (error) => {
+    assert.match(error.message, /timed out after 5000ms/);
+    assert.equal(error.decodedBytes, 0);
+    assert.ok(error.durationMs > 0);
+    return true;
+  });
 });
 
 test("the same request deadline remains active during a stalled body", async () => {
@@ -290,5 +347,10 @@ test("the same request deadline remains active during a stalled body", async () 
       }),
       { status: 200 },
     );
-  await assert.rejects(requestWowAudit("/v1/team"), /body timed out/);
+  await assert.rejects(requestWowAudit("/v1/team"), (error) => {
+    assert.match(error.message, /body timed out/);
+    assert.equal(error.decodedBytes, Buffer.byteLength('{"value":'));
+    assert.ok(error.durationMs > 0);
+    return true;
+  });
 });

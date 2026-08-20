@@ -76,6 +76,26 @@ const dispatchedRaidLensMutations = [
   ["wowaudit_upload_wishlist", {}],
 ];
 
+function assertFailureTelemetry(result, decodedBytes) {
+  const telemetry = result._meta?.["raidlens/cache"];
+  assert.deepEqual(Object.keys(telemetry ?? {}).sort(), [
+    "decodedBytes",
+    "durationMs",
+    "outcome",
+    "retainedBytes",
+    "source",
+  ]);
+  assert.equal(telemetry.source, "wowaudit");
+  assert.equal(telemetry.outcome, "load_error");
+  assert.ok(telemetry.durationMs > 0);
+  assert.equal(telemetry.decodedBytes, decodedBytes);
+  assert.equal(telemetry.retainedBytes, 0);
+  assert.doesNotMatch(
+    JSON.stringify(telemetry),
+    /private upstream failure|127\.0\.0\.1/,
+  );
+}
+
 async function connect(mode, env = {}, fdKeyPath, onStderr) {
   const client = new Client(
     { name: `wowaudit-test-${mode}`, version: "1.0.0" },
@@ -341,6 +361,55 @@ test("reuses inherited FD 3 for multiple authenticated requests without logging 
       upstream.close((error) => (error ? reject(error) : resolve())),
     );
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("reports measured failure telemetry without exposing upstream details", async () => {
+  const bodies = [
+    JSON.stringify({ message: "private upstream failure" }),
+    "{broken",
+  ];
+  let requestCount = 0;
+  const upstream = createHttpServer((_request, response) => {
+    const index = requestCount++;
+    setTimeout(() => {
+      response.writeHead(index === 0 ? 500 : 200, {
+        "content-type": "application/json",
+        ...(index === 0 ? { "retry-after": "7" } : {}),
+      });
+      response.end(bodies[index]);
+    }, 10);
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const address = upstream.address();
+  assert.ok(address && typeof address === "object");
+
+  const client = await connect("auto", {
+    WOWAUDIT_API_KEY: "test-key",
+    WOWAUDIT_BASE_URL: `http://127.0.0.1:${address.port}`,
+  });
+  try {
+    const httpError = await client.callTool({
+      name: "wowaudit_get_team",
+      arguments: {},
+    });
+    assert.equal(httpError.isError, true);
+    assert.equal(httpError.structuredContent.status, 500);
+    assert.equal(httpError.structuredContent.retryAfterSeconds, 7);
+    assertFailureTelemetry(httpError, Buffer.byteLength(bodies[0]));
+
+    const malformed = await client.callTool({
+      name: "wowaudit_get_team",
+      arguments: {},
+    });
+    assert.equal(malformed.isError, true);
+    assert.equal(malformed.structuredContent.status, 200);
+    assertFailureTelemetry(malformed, Buffer.byteLength(bodies[1]));
+  } finally {
+    await client.close();
+    await new Promise((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
   }
 });
 

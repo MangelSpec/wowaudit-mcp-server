@@ -27,13 +27,28 @@ export interface RequestOptions {
 }
 
 export class WowAuditApiError extends Error {
+  #telemetryClaimed = false;
+
   constructor(
     message: string,
     public readonly status: number | null,
     public readonly retryAfterSeconds: number | null = null,
+    public durationMs = 0,
+    public decodedBytes = 0,
   ) {
     super(message);
     this.name = "WowAuditApiError";
+  }
+
+  setLoadMetrics(durationMs: number, decodedBytes: number): void {
+    this.durationMs = durationMs;
+    this.decodedBytes = decodedBytes;
+  }
+
+  claimTelemetry(): boolean {
+    if (this.#telemetryClaimed) return false;
+    this.#telemetryClaimed = true;
+    return true;
   }
 }
 
@@ -80,13 +95,15 @@ export async function requestWowAudit<T = unknown>(
       load: (signal) => loadResponse(config, url, method, undefined, signal),
     });
   } catch (error) {
-    recordCacheTelemetry({
-      source: "wowaudit",
-      outcome: "load_error",
-      durationMs: 0,
-      decodedBytes: 0,
-      retainedBytes: 0,
-    });
+    if (error instanceof WowAuditApiError && error.claimTelemetry()) {
+      recordCacheTelemetry({
+        source: "wowaudit",
+        outcome: "load_error",
+        durationMs: error.durationMs,
+        decodedBytes: error.decodedBytes,
+        retainedBytes: 0,
+      });
+    }
     throw error;
   }
   recordCacheTelemetry({
@@ -209,6 +226,8 @@ async function loadResponse<T>(
   const relayAbort = () => controller.abort();
   parentSignal?.addEventListener("abort", relayAbort, { once: true });
   const timeout = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+  const startedAt = performance.now();
+  let decodedBytes = 0;
   try {
     let response: Response;
     try {
@@ -264,7 +283,8 @@ async function loadResponse<T>(
         response.status,
       );
     }
-    const { text, decodedBytes } = body;
+    const { text } = body;
+    decodedBytes = body.decodedBytes;
     let data: unknown = null;
     if (text.trim()) {
       try {
@@ -295,6 +315,14 @@ async function loadResponse<T>(
     }
     if (url.pathname === "/v1/team") freshness.updateTeam(data);
     return { value: data as T, decodedBytes };
+  } catch (error) {
+    if (error instanceof WowAuditApiError) {
+      error.setLoadMetrics(
+        Math.max(0, performance.now() - startedAt),
+        Math.max(decodedBytes, error.decodedBytes),
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", relayAbort);
@@ -316,7 +344,7 @@ async function readBody(
       try {
         result = await reader.read();
       } catch (error) {
-        if (signal.aborted) throw timeoutError();
+        if (signal.aborted) throw timeoutError(decodedBytes);
         throw error;
       }
       if (result.done) break;
@@ -326,6 +354,9 @@ async function readBody(
         throw new WowAuditApiError(
           `WoWAudit response exceeded WOWAUDIT_MAX_RESPONSE_BYTES (${maxBytes})`,
           response.status,
+          null,
+          0,
+          decodedBytes,
         );
       }
       chunks.push(result.value);
@@ -393,8 +424,14 @@ function oversized(config: WowAuditConfig, status: number): WowAuditApiError {
   );
 }
 
-function timeoutError(): WowAuditApiError {
-  return new WowAuditApiError("WoWAudit response body timed out", null);
+function timeoutError(decodedBytes = 0): WowAuditApiError {
+  return new WowAuditApiError(
+    "WoWAudit response body timed out",
+    null,
+    null,
+    0,
+    decodedBytes,
+  );
 }
 
 function redactApiKey(value: string, apiKey: string): string {
